@@ -1,5 +1,9 @@
 """Model wrappers for inference."""
 
+from __future__ import annotations
+
+import numpy as np
+
 from stera.models.wilor import WiLoRHandTracker, WiLoRConfig
 from stera.models.skeleton import UpperBodyEstimator, SkeletonConfig, SkeletonFrame
 from stera.models.egoblur import EgoBlurFace, EgoBlurConfig
@@ -13,9 +17,12 @@ class HandTracker:
         from stera.models import HandTracker
 
         tracker = HandTracker(model="wilor", model_path="/path/to/WiLoR")
+
+        tracker = HandTracker(model="hawor", model_path="/path/to/HaWoR")
+        poses = tracker.detect_sequence("rgb.mp4", intrinsics=rgb_K)
     """
 
-    SUPPORTED_MODELS = {"wilor", "mediapipe", "hamer"}
+    SUPPORTED_MODELS = {"wilor", "mediapipe", "hamer", "hawor"}
 
     def __init__(self, model: str = "wilor", model_path: str | None = None, **kwargs):
         self.model_name = model.lower()
@@ -33,6 +40,18 @@ class HandTracker:
                 if hasattr(config, k):
                     setattr(config, k, v)
             self._backend = WiLoRHandTracker(config)
+
+        elif self.model_name == "hawor":
+            from stera.models.hawor import HaWoRHandTracker, HaWoRConfig
+
+            config = HaWoRConfig()
+            if model_path is not None:
+                config.hawor_dir = model_path
+            for k, v in kwargs.items():
+                if not hasattr(config, k):
+                    raise TypeError(f"Unknown HaWoR configuration option: {k}")
+                setattr(config, k, v)
+            self._backend = HaWoRHandTracker(config)
 
         elif self.model_name == "mediapipe":
             # MediaPipe downloads its asset to ~/.cache/mediapipe; no
@@ -67,8 +86,10 @@ class HandTracker:
     def detect_hands(self, rgb_or_frame, depth=None, intrinsics=None):
         """Run hand detection.
 
-        Accepts either a ``SyncedFrame`` (pulls rgb/depth/depth_K from it) or
-        an ``(rgb, depth=None, intrinsics=None)`` triple.
+        Accepts either a ``SyncedFrame`` or an
+        ``(rgb, depth=None, intrinsics=None)`` triple. HaWoR uses RGB
+        intrinsics and camera-space reconstruction; other backends prefer
+        depth intrinsics when available.
         """
         if hasattr(rgb_or_frame, "rgb"):
             frame = rgb_or_frame
@@ -76,12 +97,30 @@ class HandTracker:
             if depth is None:
                 depth = frame.depth
             if intrinsics is None:
-                intrinsics = getattr(frame, "depth_K", None)
+                if self.model_name == "hawor":
+                    intrinsics = getattr(frame, "rgb_K", None)
+                else:
+                    intrinsics = getattr(frame, "depth_K", None)
                 if intrinsics is None:
                     intrinsics = getattr(frame, "rgb_K", None)
         else:
             rgb = rgb_or_frame
         return self._backend.detect_hands(rgb, depth=depth, intrinsics=intrinsics)
+
+    def detect_sequence(self, rgb_video, **kwargs):
+        """Return one hand list per input frame from a sequence backend.
+
+        HaWoR accepts a video path or image directory and requires the RGB
+        camera matrix as ``intrinsics``. WiLoR retains its existing video
+        and optional depth arguments. Other backends are frame-only.
+        """
+        detect = getattr(self._backend, "detect_sequence", None)
+        if not callable(detect):
+            raise NotImplementedError(
+                f"Hand tracker '{self.model_name}' does not support detect_sequence; "
+                "use detect_hands for individual frames."
+            )
+        return detect(rgb_video, **kwargs)
 
     def __repr__(self):
         return f"HandTracker(model='{self.model_name}')"
@@ -215,6 +254,12 @@ except ImportError:
 try:
     from stera.models.hamer import HaMeRHandTracker, HaMeRConfig
     __all__ += ["HaMeRHandTracker", "HaMeRConfig"]
+except ImportError:
+    pass
+
+try:
+    from stera.models.hawor import HaWoRHandTracker, HaWoRConfig
+    __all__ += ["HaWoRHandTracker", "HaWoRConfig"]
 except ImportError:
     pass
 

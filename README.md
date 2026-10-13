@@ -54,6 +54,80 @@ Evaluate(session).show()                       # interactive HTML QC report
 pip install "stera-sdk[all]"
 ```
 
+## HaWoR support in this fork
+
+This fork adds `HandTracker(model="hawor")` and a public
+`HandTracker.detect_sequence(...)` adapter. The upstream SDK at `df6a5ec`
+supports WiLoR, MediaPipe, and HaMeR, but does not include the HaWoR backend.
+The adapter also exposes WiLoR's existing sequence method.
+
+Install this checkout into an environment already configured for
+[HaWoR](https://github.com/ThunderVVV/HaWoR), including its PyTorch/CUDA,
+Ultralytics, and MANO dependencies:
+
+```bash
+python -m pip install --no-deps -e /path/to/stera-sdk
+```
+
+For a new environment, install the SDK's core dependencies and HaWoR's
+dependencies first; `--no-deps` only preserves an existing environment.
+Model source and weights are external and are not bundled or downloaded by
+the SDK. The default `model_path` layout is:
+
+```text
+HaWoR/
+  hawor/                                 # upstream Python package
+  lib/                                   # upstream model and dataset code
+  weights/hawor/checkpoints/hawor.ckpt
+  weights/hawor/model_config.yaml
+  weights/external/detector.pt
+  _DATA/data/mano/MANO_RIGHT.pkl
+  _DATA/data/mano_mean_params.npz
+```
+
+Obtain the weights and licensed MANO assets using the upstream installation
+instructions. This camera-space adapter does not require SLAM or infiller
+weights. It calls the model API inspected at
+[HaWoR commit 66c7d410](https://github.com/ThunderVVV/HaWoR/tree/66c7d4108d58a716deccd192cb7645170cdc7bd7).
+
+```python
+import numpy as np
+from stera.models import HandTracker
+
+tracker = HandTracker(
+    model="hawor",
+    model_path="/path/to/HaWoR",
+    yolo_conf=0.2,
+)
+rgb_K = np.load("calibrations/rgb_K.npy")
+sequence = tracker.detect_sequence("rgb.mp4", intrinsics=rgb_K)
+# Or pass a directory of naturally sorted JPEG/PNG frames.
+# Missing detections remain empty lists; indices always match input frames.
+print(tracker._backend.last_stats)
+```
+
+Use RGB intrinsics in the input image orientation, not depth intrinsics.
+The backend keeps the highest-confidence detection for each hand side per
+frame and runs temporal inference on contiguous detections. It does not
+fill detection gaps, resample video frame rates, or anchor wrists to LiDAR.
+Returned `HandPose` keypoints use the RGB optical camera frame in metres.
+MANO vertices remain local posed geometry, with camera translation stored
+separately, as in the WiLoR export. The existing episode exporter writes
+these arrays and MANO parameters without a schema change. HaWoR's model takes
+a scalar focal length (the mean of `fx` and `fy`); camera translation and exported 2D
+projections use the supplied RGB calibration. `CUDA_VISIBLE_DEVICES` from
+the caller is respected, so batch workers can select their own GPUs.
+
+Run the CPU contract tests without model weights:
+
+```bash
+PYTHONPATH=src python -m pytest -q tests/test_hawor.py
+```
+
+These tests use simulated detector/model outputs. Before a full batch run,
+validate a short sequence with the actual CUDA environment and checkpoints;
+the local tests do not establish GPU compatibility or reconstruction accuracy.
+
 ## Documentation
 
 - 📚 [Docs](https://fpvlabs.ai/stera/docs)
